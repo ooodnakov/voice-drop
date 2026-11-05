@@ -1,8 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+use tauri::Emitter;
 
 const SEND_SCRIPT: &str = include_str!("../tg_send.py");
 
@@ -64,13 +68,25 @@ fn base_dir() -> PathBuf {
     }
 }
 
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+}
+
 fn data_dir() -> PathBuf {
-    base_dir().join("data")
+    let dir = base_dir().join("data");
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    restrict(&dir, 0o700);
+    dir
 }
 
 fn accounts_dir() -> PathBuf {
     let dir = data_dir().join("accounts");
     let _ = std::fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    restrict(&dir, 0o700);
     dir
 }
 
@@ -143,6 +159,10 @@ struct Config {
     accounts: Vec<Account>,
     #[serde(default)]
     chat: String,
+    /// Recipient per account key; `chat` above is the legacy mirror of the
+    /// active entry.
+    #[serde(default)]
+    chats: BTreeMap<String, String>,
     #[serde(default = "default_circle")]
     circle: bool,
     #[serde(default = "default_theme")]
@@ -178,32 +198,115 @@ impl Default for Config {
             account: String::new(),
             accounts: Vec::new(),
             chat: String::new(),
+            chats: BTreeMap::new(),
             circle: default_circle(),
             theme: default_theme(),
         }
     }
 }
 
-fn save_config(config: &Config) -> bool {
+static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_config() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn unix_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// Write through a sibling temp file so an interrupted save never leaves half
+/// a config behind; `rename` is atomic within one directory.
+fn save_config_locked(config: &Config) -> bool {
     let path = config_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return false;
     }
-    serde_json::to_string_pretty(config)
-        .ok()
-        .and_then(|text| std::fs::write(&path, text).ok())
-        .is_some()
+    #[cfg(unix)]
+    restrict(parent, 0o700);
+    let text = match serde_json::to_string_pretty(config) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let tmp = parent.join("config.json.tmp");
+    if std::fs::write(&tmp, text).is_err() {
+        return false;
+    }
+    #[cfg(unix)]
+    restrict(&tmp, 0o600);
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
+}
+
+fn save_config(config: &Config) -> bool {
+    let _guard = lock_config();
+    save_config_locked(config)
+}
+
+/// Keep a config we cannot parse instead of overwriting it with defaults.
+fn set_config_aside(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    let aside = path.with_file_name(format!("config.json.corrupt-{}", unix_ts()));
+    let _ = std::fs::rename(path, aside);
+}
+
+fn load_config_locked() -> Config {
+    let path = config_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str::<Config>(&text) {
+            Ok(mut config) => {
+                if migrate_chats(&mut config) {
+                    save_config_locked(&config);
+                }
+                return config;
+            }
+            Err(_) => set_config_aside(&path),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => set_config_aside(&path),
+    }
+    let config = Config::default();
+    save_config_locked(&config);
+    config
 }
 
 fn load_config() -> Config {
-    if let Ok(text) = std::fs::read_to_string(config_path()) {
-        if let Ok(config) = serde_json::from_str::<Config>(&text) {
-            return config;
-        }
+    let _guard = lock_config();
+    load_config_locked()
+}
+
+/// The legacy `chat` belongs to the active account; seed `chats` from it once.
+fn migrate_chats(config: &mut Config) -> bool {
+    if !config.chats.is_empty() || config.chat.trim().is_empty() || config.account.is_empty() {
+        return false;
     }
-    let config = Config::default();
-    save_config(&config);
-    config
+    config.chats.insert(config.account.clone(), config.chat.clone());
+    true
+}
+
+/// Recipient for one account. When per-account chats exist and this account has
+/// none, the legacy value is not reused: it belongs to somebody else.
+fn chat_for(config: &Config, key: &str) -> String {
+    if let Some(chat) = config.chats.get(key) {
+        return chat.clone();
+    }
+    if config.chats.is_empty() {
+        return config.chat.clone();
+    }
+    String::new()
 }
 
 fn account_by_key<'a>(config: &'a Config, key: &str) -> Option<&'a Account> {
@@ -294,6 +397,52 @@ fn find_ffmpeg() -> Option<PathBuf> {
         return Some(PathBuf::from("ffmpeg"));
     }
     None
+}
+
+const VIDEO_EXTS: [&str; 12] = [
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "flv", "wmv", "3gp", "mpeg", "mpg", "ts",
+];
+const AUDIO_EXTS: [&str; 15] = [
+    "mp3", "m4a", "aac", "flac", "wav", "wma", "aiff", "aif", "alac", "amr", "ape", "wv", "ogg",
+    "oga", "opus",
+];
+const AUDIO_PASSTHROUGH_EXTS: [&str; 3] = ["ogg", "oga", "opus"];
+
+fn file_needs_ffmpeg(path: &str) -> bool {
+    let extension = Path::new(path)
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if VIDEO_EXTS.contains(&extension.as_str()) {
+        return true;
+    }
+    AUDIO_EXTS.contains(&extension.as_str())
+        && !AUDIO_PASSTHROUGH_EXTS.contains(&extension.as_str())
+}
+
+/// Whether this batch has to be transcoded at all. `circle` on its own never
+/// forces a transcode: only video (and non-Opus audio) is re-encoded, and a
+/// plain document is uploaded untouched.
+fn needs_ffmpeg(paths: &[String], circle: bool) -> bool {
+    let _ = circle;
+    paths.iter().any(|path| file_needs_ffmpeg(path))
+}
+
+fn missing_ffmpeg_error(paths: &[String]) -> String {
+    let names: Vec<String> = paths
+        .iter()
+        .filter(|path| file_needs_ffmpeg(path))
+        .map(|path| {
+            Path::new(path)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone())
+        })
+        .collect();
+    format!(
+        "ffmpeg is needed for: {} (put ffmpeg on PATH or next to the app)",
+        names.join(", ")
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -425,11 +574,45 @@ fn short(text: &str, max: usize) -> String {
     out
 }
 
+fn absorb(
+    value: serde_json::Value,
+    on_event: Option<&dyn Fn(serde_json::Value)>,
+    result: &mut Option<serde_json::Value>,
+) {
+    if value.get("event").is_some() {
+        if let Some(callback) = on_event {
+            callback(value);
+        }
+    } else {
+        *result = Some(value);
+    }
+}
+
+/// Overall budget for one sender run; `0` disables the deadline.
+fn send_timeout_secs() -> u64 {
+    std::env::var("VOICEDROP_SEND_TIMEOUT")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1800)
+}
+
 fn run_sender(
     config: &Config,
     python: &Path,
     session: &Path,
     extra: &[String],
+    on_event: Option<&dyn Fn(serde_json::Value)>,
+) -> serde_json::Value {
+    run_sender_with_env(config, python, session, extra, on_event, &[])
+}
+
+fn run_sender_with_env(
+    config: &Config,
+    python: &Path,
+    session: &Path,
+    extra: &[String],
+    on_event: Option<&dyn Fn(serde_json::Value)>,
+    env: &[(&str, &str)],
 ) -> serde_json::Value {
     let script = match sender_script() {
         Some(script) => script,
@@ -446,46 +629,139 @@ fn run_sender(
         .arg(script)
         .arg("--session")
         .arg(session)
-        .arg("--api-id")
-        .arg(config.api_id.to_string())
-        .arg("--api-hash")
-        .arg(&config.api_hash);
+        // Credentials travel through the environment: argv is readable by any
+        // process on the machine.
+        .env("VOICEDROP_API_ID", config.api_id.to_string())
+        .env("VOICEDROP_API_HASH", &config.api_hash);
+    for (key, value) in env {
+        command.env(key, value);
+    }
     if let Some(ffmpeg) = find_ffmpeg() {
         command.arg("--ffmpeg").arg(ffmpeg);
     }
     for arg in extra {
         command.arg(arg);
     }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     hidden(&mut command);
 
-    match command.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            match serde_json::from_str::<serde_json::Value>(&stdout) {
-                Ok(value) => value,
-                Err(_) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let detail = if stdout.is_empty() {
-                        short(&stderr, 240)
-                    } else {
-                        short(&stdout, 240)
-                    };
-                    serde_json::json!({
-                        "ok": false,
-                        "error": format!(
-                            "sender failed (exit {}): {}",
-                            output.status.code().unwrap_or(-1),
-                            if detail.is_empty() { "no output".to_string() } else { detail }
-                        )
-                    })
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!("cannot run {}: {error}", python.display())
+            })
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            return serde_json::json!({ "ok": false, "error": "sender stdout was not captured" });
+        }
+    };
+    let stderr = child.stderr.take();
+
+    let (tx, rx) = std::sync::mpsc::channel::<serde_json::Value>();
+    let reader = std::thread::spawn(move || {
+        let mut raw = String::new();
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            raw.push_str(&line);
+            raw.push('\n');
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if value.is_object() && tx.send(value).is_err() {
+                    break;
                 }
             }
         }
-        Err(error) => serde_json::json!({
-            "ok": false,
-            "error": format!("cannot run {}: {error}", python.display())
-        }),
+        raw
+    });
+    let error_reader = stderr.map(|stderr| {
+        std::thread::spawn(move || {
+            let mut stderr = stderr;
+            let mut raw = String::new();
+            let _ = stderr.read_to_string(&mut raw);
+            raw
+        })
+    });
+
+    let timeout_secs = send_timeout_secs();
+    let deadline = if timeout_secs == 0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs(timeout_secs))
+    };
+    let mut result: Option<serde_json::Value> = None;
+    let mut exit_code: Option<i32> = None;
+    let mut timed_out = false;
+    loop {
+        while let Ok(value) = rx.try_recv() {
+            absorb(value, on_event, &mut result);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                exit_code = Some(status.code().unwrap_or(-1));
+                break;
+            }
+            Ok(None) => {}
+            Err(_) => break,
+        }
+        if deadline.is_some_and(|limit| Instant::now() >= limit) {
+            let _ = child.kill();
+            let _ = child.wait();
+            timed_out = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
+
+    // A killed child may leave a helper (ffmpeg) holding the pipe, so the
+    // deadline response must not wait for the reader threads.
+    if timed_out {
+        while let Ok(value) = rx.try_recv() {
+            absorb(value, on_event, &mut result);
+        }
+        return serde_json::json!({
+            "ok": false,
+            "error": format!("sender timed out after {timeout_secs}s")
+        });
+    }
+
+    // The reader finishes once the pipe closes, so joining it guarantees every
+    // line the child wrote has been delivered.
+    let stdout_text = reader.join().unwrap_or_default();
+    while let Ok(value) = rx.try_recv() {
+        absorb(value, on_event, &mut result);
+    }
+    let stderr_text = error_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    if let Some(value) = result {
+        return value;
+    }
+    let detail = if stdout_text.trim().is_empty() {
+        short(&stderr_text, 240)
+    } else {
+        short(&stdout_text, 240)
+    };
+    serde_json::json!({
+        "ok": false,
+        "error": format!(
+            "sender failed (exit {}): {}",
+            exit_code.unwrap_or(-1),
+            if detail.is_empty() { "no output".to_string() } else { detail }
+        )
+    })
 }
 
 fn sender_script() -> Option<PathBuf> {
@@ -529,7 +805,8 @@ async fn prepare() -> Result<serde_json::Value, String> {
                 if !path.exists() {
                     continue;
                 }
-                let result = run_sender(&config, python_path, &path, &["--whoami".to_string()]);
+                let result =
+                    run_sender(&config, python_path, &path, &["--whoami".to_string()], None);
                 if result.get("ok").and_then(|value| value.as_bool()) == Some(true) {
                     if let Some(user) = result.get("user") {
                         config.accounts[index].name = user
@@ -552,7 +829,8 @@ async fn prepare() -> Result<serde_json::Value, String> {
         }
 
         let runtime = Runtime {
-            ok: python.is_ok() && ffmpeg.is_some(),
+            // Documents and Opus files need no ffmpeg, so it stays advisory.
+            ok: python.is_ok(),
             python: python
                 .as_ref()
                 .map(|path| path.display().to_string())
@@ -561,13 +839,13 @@ async fn prepare() -> Result<serde_json::Value, String> {
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
-            error: match (&python, &ffmpeg) {
-                (Err(error), _) => Some(error.clone()),
-                (Ok(_), None) => Some(
-                    "ffmpeg not found. Put ffmpeg.exe on PATH or in <app>\\bin\\ffmpeg.exe."
+            error: match &python {
+                Err(error) => Some(error.clone()),
+                Ok(_) if ffmpeg.is_none() => Some(
+                    "ffmpeg not found. Put ffmpeg on PATH or next to the app; it is only needed for video and non-Opus audio."
                         .to_string(),
                 ),
-                _ => None,
+                Ok(_) => None,
             },
         };
         serde_json::json!({ "runtime": runtime, "state": state_payload(&config) })
@@ -581,7 +859,8 @@ fn state_payload(config: &Config) -> serde_json::Value {
         "api_id": config.api_id,
         "api_hash": config.api_hash,
         "account": config.account,
-        "chat": config.chat,
+        "chat": chat_for(config, &config.account),
+        "chats": config.chats,
         "circle": config.circle,
         "theme": config.theme,
         "data_dir": data_dir().display().to_string(),
@@ -603,8 +882,18 @@ fn current_state() -> serde_json::Value {
 #[tauri::command]
 fn set_chat(chat: String) -> serde_json::Value {
     let mut config = load_config();
-    if !chat.trim().is_empty() {
-        config.chat = chat.trim().to_string();
+    let chat = chat.trim().to_string();
+    if !chat.is_empty() {
+        let key = if config.account.is_empty() {
+            config.accounts.first().map(|account| account.key.clone()).unwrap_or_default()
+        } else {
+            config.account.clone()
+        };
+        // `chats` is the source of truth; `chat` stays as the legacy mirror.
+        config.chat = chat.clone();
+        if !key.is_empty() {
+            config.chats.insert(key, chat);
+        }
         save_config(&config);
     }
     state_payload(&config)
@@ -702,8 +991,13 @@ async fn diagnostics() -> Result<serde_json::Value, String> {
                 let session = session_path(&account);
                 match ensure_python(&config) {
                     Ok(python_path) => {
-                        let result =
-                            run_sender(&config, &python_path, &session, &["--whoami".to_string()]);
+                        let result = run_sender(
+                            &config,
+                            &python_path,
+                            &session,
+                            &["--whoami".to_string()],
+                            None,
+                        );
                         if result.get("ok").and_then(|value| value.as_bool()) == Some(true) {
                             let user = result.get("user").cloned().unwrap_or_default();
                             let name = user
@@ -806,6 +1100,7 @@ fn remove_account(key: String) -> serde_json::Value {
         let path = session_path(&account);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(PathBuf::from(format!("{}-journal", path.display())));
+        config.chats.remove(&key);
         if config.account == key {
             config.account = config
                 .accounts
@@ -828,7 +1123,13 @@ async fn list_targets() -> Result<serde_json::Value, String> {
         };
         let session = session_path(&account);
         with_python(&config, |python| {
-            run_sender(&config, python, &session, &["--list-targets".into(), "--limit".into(), "50".into()])
+            run_sender(
+                &config,
+                python,
+                &session,
+                &["--list-targets".into(), "--limit".into(), "50".into()],
+                None,
+            )
         })
     })
     .await
@@ -836,31 +1137,74 @@ async fn list_targets() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-async fn send_files(paths: Vec<String>) -> Result<serde_json::Value, String> {
+async fn send_files(
+    app: tauri::AppHandle,
+    account: String,
+    chat: String,
+    circle: bool,
+    paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
     if paths.is_empty() {
         return Ok(serde_json::json!({ "ok": false, "error": "no files dropped" }));
     }
+    let chat = chat.trim().to_string();
+    if chat.is_empty() {
+        return Ok(serde_json::json!({ "ok": false, "error": "no recipient selected" }));
+    }
+    // The caller froze account/chat/circle when the batch was queued: never
+    // consult the active account or config.chat here.
+    let requested = account;
     tauri::async_runtime::spawn_blocking(move || {
         let config = load_config();
-        let account = match active_account(&config) {
-            Some(account) => account,
-            None => return Ok(serde_json::json!({ "ok": false, "error": "no account logged in" })),
+        let account = match account_by_key(&config, &requested) {
+            Some(account) => account.clone(),
+            None => {
+                return Ok(serde_json::json!({
+                    "ok": false,
+                    "error": "account is not logged in",
+                    "account": requested,
+                    "chat": chat,
+                }))
+            }
         };
-        if find_ffmpeg().is_none() {
+        let session = session_path(&account);
+        if !session.exists() {
             return Ok(serde_json::json!({
                 "ok": false,
-                "error": "ffmpeg not found: put ffmpeg.exe on PATH or in <app>\\bin\\ffmpeg.exe"
+                "error": "this account has no session file, log in again",
+                "account": account.key,
+                "chat": chat,
             }));
         }
-        let session = session_path(&account);
-        let chat = config.chat.clone();
-        if chat.trim().is_empty() {
-            return Ok(serde_json::json!({ "ok": false, "error": "no recipient selected" }));
+        if needs_ffmpeg(&paths, circle) && find_ffmpeg().is_none() {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "error": missing_ffmpeg_error(&paths),
+                "account": account.key,
+                "chat": chat,
+            }));
         }
-        let mut extra = vec!["--chat".to_string(), chat.clone(), "--circle".to_string()];
+        let mut extra = vec!["--chat".to_string(), chat.clone()];
+        if circle {
+            extra.push("--circle".to_string());
+        }
         extra.extend(paths.iter().cloned());
-        let mut payload = with_python(&config, |python| run_sender(&config, python, &session, &extra))?;
+
+        let handle = app.clone();
+        let emit = move |value: serde_json::Value| {
+            let _ = handle.emit("send-progress", value);
+        };
+        let mut payload = with_python(&config, |python| {
+            run_sender(
+                &config,
+                python,
+                &session,
+                &extra,
+                Some(&emit as &dyn Fn(serde_json::Value)),
+            )
+        })?;
         if let Some(object) = payload.as_object_mut() {
+            object.insert("account".into(), serde_json::Value::String(account.key));
             object.insert("chat".into(), serde_json::Value::String(chat));
         }
         Ok(payload)
@@ -886,6 +1230,7 @@ async fn login_start(phone: String) -> Result<serde_json::Value, String> {
                 python,
                 &session,
                 &["--login-send-code".into(), phone.clone()],
+                None,
             )
         })
     })
@@ -916,6 +1261,7 @@ async fn login_code(
                 "--phone-hash".into(),
                 phone_hash,
             ],
+            None,
         );
         finalize_login(&mut config, &key, &phone, &result)
     })
@@ -930,11 +1276,13 @@ async fn login_password(phone: String, password: String) -> Result<serde_json::V
         let key = sanitize_key(&phone);
         let session = accounts_dir().join(format!("{key}.session"));
         let python = ensure_python(&config)?;
-        let result = run_sender(
+        let result = run_sender_with_env(
             &config,
             &python,
             &session,
-            &["--login-password".into(), password],
+            &["--login-2fa".into()],
+            None,
+            &[("VOICEDROP_2FA", password.as_str())],
         );
         finalize_login(&mut config, &key, &phone, &result)
     })
@@ -1004,7 +1352,7 @@ fn oneshot(args: &[String]) -> i32 {
         eprintln!("usage: voice-drop --oneshot <chat> <result.json> <file> [file...]");
         return 2;
     }
-    let chat = &args[1];
+    let requested_chat = args[1].trim().to_string();
     let out = PathBuf::from(&args[2]);
     let files: Vec<String> = args[3..].to_vec();
     let config = load_config();
@@ -1015,6 +1363,20 @@ fn oneshot(args: &[String]) -> i32 {
             return 2;
         }
     };
+    // An empty chat argument means "whatever this account already sends to".
+    let chat = if requested_chat.is_empty() {
+        chat_for(&config, &account.key)
+    } else {
+        requested_chat
+    };
+    if chat.is_empty() {
+        eprintln!("no recipient selected");
+        return 2;
+    }
+    if needs_ffmpeg(&files, config.circle) && find_ffmpeg().is_none() {
+        eprintln!("{}", missing_ffmpeg_error(&files));
+        return 2;
+    }
     let python = match ensure_python(&config) {
         Ok(python) => python,
         Err(error) => {
@@ -1022,9 +1384,12 @@ fn oneshot(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let mut extra = vec!["--chat".to_string(), chat.clone(), "--circle".to_string()];
+    let mut extra = vec!["--chat".to_string(), chat];
+    if config.circle {
+        extra.push("--circle".to_string());
+    }
     extra.extend(files);
-    let result = run_sender(&config, &python, &session_path(&account), &extra);
+    let result = run_sender(&config, &python, &session_path(&account), &extra, None);
     let text = serde_json::to_string_pretty(&result).unwrap_or_default();
     let _ = std::fs::write(&out, &text);
     println!("{text}");
@@ -1085,4 +1450,99 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running VoiceDrop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_key_keeps_digits_only() {
+        assert_eq!(sanitize_key("+7 (987) 654-32-10"), "79876543210");
+        assert_eq!(sanitize_key("79876543210"), "79876543210");
+        assert_eq!(sanitize_key(""), "account");
+        assert_eq!(sanitize_key("@handle"), "account");
+    }
+
+    #[test]
+    fn needs_ffmpeg_only_when_a_file_is_transcoded() {
+        let check = |name: &str, expected: bool| {
+            for circle in [false, true] {
+                let paths = vec![name.to_string()];
+                assert_eq!(
+                    needs_ffmpeg(&paths, circle),
+                    expected,
+                    "{name} with circle={circle}"
+                );
+            }
+        };
+        check("notes.pdf", false);
+        check("track.mp3", true);
+        check("voice.ogg", false);
+        check("clip.mp4", true);
+        check("Clip.MOV", true);
+        check("voice.opus", false);
+        check("archive.zip", false);
+    }
+
+    #[test]
+    fn needs_ffmpeg_handles_empty_and_mixed_batches() {
+        assert!(!needs_ffmpeg(&[], true));
+        let mixed = vec!["notes.pdf".to_string(), "track.mp3".to_string()];
+        assert!(needs_ffmpeg(&mixed, false));
+        let documents = vec!["notes.pdf".to_string(), "image.png".to_string()];
+        assert!(!needs_ffmpeg(&documents, true));
+    }
+
+    #[test]
+    fn migrate_chats_moves_the_legacy_recipient() {
+        let mut legacy = Config {
+            account: "79876543210".into(),
+            chat: "@durov".into(),
+            ..Config::default()
+        };
+        assert!(migrate_chats(&mut legacy));
+        assert_eq!(
+            legacy.chats.get("79876543210").map(String::as_str),
+            Some("@durov")
+        );
+        assert!(!migrate_chats(&mut legacy), "a second load is a no-op");
+
+        let mut per_account = Config {
+            account: "1".into(),
+            chat: "@legacy".into(),
+            ..Config::default()
+        };
+        per_account.chats.insert("1".into(), "@own".into());
+        assert!(!migrate_chats(&mut per_account));
+        assert_eq!(
+            per_account.chats.get("1").map(String::as_str),
+            Some("@own")
+        );
+
+        let mut anonymous = Config {
+            chat: "@durov".into(),
+            ..Config::default()
+        };
+        assert!(!migrate_chats(&mut anonymous));
+        assert!(anonymous.chats.is_empty());
+    }
+
+    #[test]
+    fn chat_for_never_borrows_another_accounts_recipient() {
+        let mut config = Config::default();
+        config.chat = "@legacy".into();
+        assert_eq!(chat_for(&config, "1"), "@legacy");
+
+        config.chats.insert("2".into(), "@second".into());
+        assert_eq!(chat_for(&config, "2"), "@second");
+        assert_eq!(chat_for(&config, "1"), "");
+    }
+
+    #[test]
+    fn short_keeps_the_last_line_and_truncates() {
+        assert_eq!(short("warning\nboom\n\n", 40), "boom");
+        assert_eq!(short("", 40), "");
+        assert_eq!(short(&"x".repeat(20), 5), "xxxxx\u{2026}");
+    }
 }
