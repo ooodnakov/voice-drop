@@ -24,11 +24,14 @@ const addAccountBtn = el("addAccount");
 const removeAccountBtn = el("removeAccount");
 const chatSelect = el("chat");
 const refreshBtn = el("refresh");
+const circleToggleBtn = el("circleToggle");
 const zoneEl = el("zone");
 const pickBtn = el("pick");
 const winMinBtn = el("winMin");
 const winCloseBtn = el("winClose");
 const statusEl = el("status");
+const ledgerHintEl = el("ledgerHint");
+const retryFailedBtn = el("retryFailed");
 
 const loginEl = el("login");
 const loginErrorEl = el("loginError");
@@ -63,12 +66,15 @@ const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 let themePreference = "gruvbox-dark";
 let runtime = {};
-let appState = { accounts: [], chat: "", account: "", api_id: 0, api_hash: "" };
+let appState = { accounts: [], chats: {}, chat: "", account: "", circle: true, api_id: 0, api_hash: "" };
 
 let loginPhone = "";
 let phoneHash = "";
 let queue = [];
 let pumping = false;
+let activeBatch = null;
+let activeByPath = null;
+let failedRows = [];
 let lastDrop = { key: "", at: 0 };
 
 /* ---------- small helpers ---------- */
@@ -107,7 +113,13 @@ function setBanner(text, isError) {
 
 /* ---------- status rows ---------- */
 
-function addRow(text, tag, cls) {
+function trimRows() {
+  while (statusEl.children.length > MAX_ROWS) {
+    statusEl.firstElementChild.remove();
+  }
+}
+
+function buildRow(text, tag, cls, dest) {
   const row = document.createElement("div");
   row.className = `row ${cls || "pending"}`;
 
@@ -116,19 +128,35 @@ function addRow(text, tag, cls) {
   name.textContent = text;
   name.title = text;
 
+  const target = document.createElement("div");
+  target.className = "dest";
+  target.textContent = dest || "";
+  target.title = dest || "";
+  target.hidden = !dest;
+
   const label = document.createElement("div");
   label.className = "tag";
   label.textContent = tag;
 
-  row.append(name, label);
+  row.append(name, target, label);
   statusEl.append(row);
-
-  while (statusEl.children.length > MAX_ROWS) {
-    statusEl.firstElementChild.remove();
-  }
+  trimRows();
 
   if (typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
-  return { row, tag: label };
+  return {
+    row,
+    tag: label,
+    path: "",
+    base: "",
+    account: "",
+    chat: "",
+    circle: false,
+    state: "queued",
+  };
+}
+
+function addRow(text, tag, cls, dest) {
+  return buildRow(text, tag, cls, dest);
 }
 
 function setRow(item, cls, text, title) {
@@ -137,10 +165,49 @@ function setRow(item, cls, text, title) {
   item.tag.title = title || text;
 }
 
+function refreshHint() {
+  if (!ledgerHintEl) return;
+  let queued = 0;
+  let sending = 0;
+  for (const batch of queue) queued += batch.rows.length;
+  if (activeBatch) {
+    for (const item of activeBatch.rows) {
+      if (item.state === "sending") sending += 1;
+      else if (item.state === "queued") queued += 1;
+    }
+  }
+  if (!queued && !sending) {
+    ledgerHintEl.textContent = "stamped on send";
+    return;
+  }
+  const parts = [];
+  if (queued) parts.push(`${queued} queued`);
+  if (sending) parts.push(`${sending} sending`);
+  ledgerHintEl.textContent = parts.join(" \u00b7 ");
+}
+
 /* ---------- accounts ---------- */
 
 function accounts() {
   return Array.isArray(appState.accounts) ? appState.accounts : [];
+}
+
+function accountLabel(key) {
+  const match = accounts().find((account) => account.key === key);
+  if (!match) return String(key || "");
+  return String(match.label || match.key || key || "");
+}
+
+function currentChat() {
+  const chats = appState.chats;
+  const perAccount = chats && typeof chats === "object" ? chats[appState.account] : "";
+  return perAccount || appState.chat || "";
+}
+
+function destinationText(account, chat) {
+  const label = accountLabel(account);
+  if (label && chat) return `${label} · ${chat}`;
+  return label || chat || "";
 }
 
 function renderAccounts() {
@@ -165,6 +232,7 @@ function renderAccounts() {
       ? appState.account
       : list[0].key;
     accountSelect.value = wanted;
+    appState.account = wanted;
   }
 
   removeAccountBtn.disabled = list.length === 0;
@@ -185,6 +253,22 @@ function renderPlaceholder(text) {
   option.disabled = true;
   option.selected = true;
   chatSelect.append(option);
+}
+
+function syncChatSelect(value) {
+  if (value) {
+    const option = [...chatSelect.options].find((item) => item.value === value);
+    if (option) {
+      chatSelect.value = value;
+      return;
+    }
+  }
+  renderPlaceholder();
+}
+
+function renderCircle() {
+  if (!circleToggleBtn) return;
+  circleToggleBtn.setAttribute("aria-pressed", String(Boolean(appState.circle)));
 }
 
 function renderTargets(targets, selected) {
@@ -211,7 +295,7 @@ function renderTargets(targets, selected) {
 }
 
 async function loadTargets() {
-  const selected = appState.chat || "";
+  const selected = currentChat();
   refreshBtn.disabled = true;
   try {
     const result = await invoke("list_targets");
@@ -230,35 +314,86 @@ async function loadTargets() {
 
 /* ---------- sending (serial batches) ---------- */
 
-function applyResult(item, result) {
-  if (result.error) {
-    setRow(item, "error", String(result.error));
-    return;
-  }
-  const kind = result.circle ? "circle" : result.voice ? "voice" : "document";
-  const id = result.id === undefined || result.id === null ? "" : ` · #${result.id}`;
-  setRow(item, "ok", `${kind}${id}`);
+function renderRetry() {
+  if (!retryFailedBtn) return;
+  retryFailedBtn.hidden = failedRows.length === 0;
+  retryFailedBtn.textContent = failedRows.length > 1
+    ? `retry failed (${failedRows.length})`
+    : "retry failed";
 }
 
-async function sendBatch(batch) {
-  for (const item of batch.rows) {
-    const encoding = looksAudio(item.path) || looksVideo(item.path);
-    setRow(item, "pending", encoding ? "encoding…" : "uploading…");
-  }
+function failRow(item, message) {
+  setRow(item, "error", message);
+  item.state = "failed";
+  if (!failedRows.includes(item)) failedRows.push(item);
+  renderRetry();
+  refreshHint();
+}
 
-  let result;
-  try {
-    result = await invoke("send_files", { paths: batch.paths });
-  } catch (error) {
-    const message = errorText(error);
-    for (const item of batch.rows) setRow(item, "error", message);
+function okRow(item, text) {
+  setRow(item, "ok", text);
+  item.state = "done";
+  const index = failedRows.indexOf(item);
+  if (index >= 0) {
+    failedRows.splice(index, 1);
+    renderRetry();
+  }
+  refreshHint();
+}
+
+function applyResult(item, result) {
+  if (result && result.error) {
+    failRow(item, String(result.error));
     return;
   }
+  const kind = result && result.circle ? "circle" : result && result.voice ? "voice" : "document";
+  const id = result && result.id !== undefined && result.id !== null ? ` · #${result.id}` : "";
+  okRow(item, `${kind}${id}`);
+}
 
+/* A ledger row remembers the frozen destination of its batch so a retry cannot drift. */
+function buildItem(batch, path) {
+  const base = basename(path);
+  const item = buildRow(base, "queued", "pending", destinationText(batch.account, batch.chat));
+  item.path = path;
+  item.base = base;
+  item.account = batch.account;
+  item.chat = batch.chat;
+  item.circle = Boolean(batch.circle);
+  item.state = "queued";
+  return item;
+}
+
+function queueBatch(batch) {
+  for (const path of batch.paths) batch.rows.push(buildItem(batch, path));
+  queue.push(batch);
+  refreshHint();
+  pump();
+}
+
+/* One `send-progress` payload: {event:"file",path,id,voice,circle} or the same with an error. */
+function onProgress(payload) {
+  if (!payload || typeof payload.path !== "string") return;
+  if (payload.event && payload.event !== "file") return;
+  const pool = activeByPath && activeByPath.get(payload.path);
+  if (!pool || !pool.length) return;
+  const item = pool.shift();
+  if (payload.error) {
+    failRow(item, String(payload.error));
+    return;
+  }
+  if (payload.id === undefined || payload.id === null) return;
+  const kind = payload.circle ? "circle" : payload.voice ? "voice" : "document";
+  okRow(item, `${kind} · #${payload.id}`);
+}
+
+function reconcile(batch, result) {
   const results = result && Array.isArray(result.results) ? result.results : null;
   if (!results) {
     const message = (result && result.error) || "no results";
-    for (const item of batch.rows) setRow(item, "error", message);
+    for (const item of batch.rows) {
+      if (item.state === "sending") failRow(item, message);
+    }
     return;
   }
 
@@ -273,7 +408,7 @@ async function sendBatch(batch) {
     const pool = pending.get(item.base);
     const entry = pool && pool.length ? pool.shift() : null;
     if (!entry) {
-      setRow(item, "error", (result && result.error) || "no result");
+      if (item.state === "sending") failRow(item, (result && result.error) || "no result");
       continue;
     }
     applyResult(item, entry);
@@ -281,10 +416,55 @@ async function sendBatch(batch) {
 
   for (const pool of pending.values()) {
     for (const entry of pool) {
-      const item = addRow(basename(entry && entry.file ? entry.file : "?"), "", "pending");
+      const item = addRow(
+        basename(entry && entry.file ? entry.file : "?"),
+        "",
+        "pending",
+        destinationText(batch.account, batch.chat),
+      );
       applyResult(item, entry);
     }
   }
+}
+
+async function sendBatch(batch) {
+  activeBatch = batch;
+  activeByPath = new Map();
+
+  for (const item of batch.rows) {
+    item.state = "sending";
+    const encoding = looksAudio(item.path) || looksVideo(item.path);
+    setRow(item, "pending", encoding ? "encoding…" : "uploading…");
+    const pool = activeByPath.get(item.path);
+    if (pool) pool.push(item);
+    else activeByPath.set(item.path, [item]);
+  }
+  refreshHint();
+
+  let result = null;
+  let failure = "";
+  try {
+    result = await invoke("send_files", {
+      account: batch.account,
+      chat: batch.chat,
+      circle: batch.circle,
+      paths: batch.paths,
+    });
+  } catch (error) {
+    failure = errorText(error);
+  }
+
+  if (failure) {
+    for (const item of batch.rows) {
+      if (item.state === "sending") failRow(item, failure);
+    }
+  } else {
+    reconcile(batch, result);
+  }
+
+  activeBatch = null;
+  activeByPath = null;
+  refreshHint();
 }
 
 async function pump() {
@@ -296,20 +476,52 @@ async function pump() {
     }
   } finally {
     pumping = false;
+    refreshHint();
   }
 }
 
 function enqueue(paths) {
-  const batch = { paths: [], rows: [] };
-  for (const path of paths) {
-    const base = basename(path);
-    const item = addRow(base, "queued", "pending");
-    batch.paths.push(path);
-    batch.rows.push({ ...item, path, base });
+  const clean = (paths || []).filter((path) => typeof path === "string" && path.length > 0);
+  if (!clean.length) return;
+
+  if (!appState.account) {
+    setBanner("log in with a Telegram account first", false);
+    return;
   }
-  if (!batch.paths.length) return;
-  queue.push(batch);
-  pump();
+
+  const chat = currentChat();
+  if (!chat) {
+    setBanner("pick a recipient first", false);
+    return;
+  }
+
+  queueBatch({
+    paths: clean,
+    account: appState.account,
+    chat,
+    circle: Boolean(appState.circle),
+    rows: [],
+  });
+  setBanner("", false);
+}
+
+/* Re-send only the rows that failed, grouped by their frozen destination. */
+function retryFailed() {
+  if (!failedRows.length) return;
+  const groups = new Map();
+  for (const item of failedRows.slice()) {
+    const key = [item.account, item.chat, item.circle ? "1" : "0"].join("\u0000");
+    let group = groups.get(key);
+    if (!group) {
+      group = { paths: [], account: item.account, chat: item.chat, circle: Boolean(item.circle), rows: [] };
+      groups.set(key, group);
+    }
+    if (!group.paths.includes(item.path)) group.paths.push(item.path);
+  }
+
+  failedRows = [];
+  renderRetry();
+  for (const batch of groups.values()) queueBatch(batch);
 }
 
 function handleDrop(paths) {
@@ -383,6 +595,7 @@ async function applyLoginResult(result) {
   appState = result.state || appState;
   closeLogin();
   renderAccounts();
+  renderCircle();
   renderSettingsFields();
   if (accounts().length) await loadTargets();
 }
@@ -447,9 +660,21 @@ function applyTheme(preference) {
   document.documentElement.dataset.theme = resolvedTheme(preference);
   if (!themesEl) return;
   for (const button of themesEl.children) {
-    if (button.tagName === "BUTTON") {
-      button.setAttribute("aria-pressed", String(button.dataset.theme === preference));
-    }
+    if (button.tagName !== "BUTTON") continue;
+    const checked = button.dataset.theme === preference;
+    button.setAttribute("aria-checked", String(checked));
+    button.tabIndex = checked ? 0 : -1;
+  }
+}
+
+async function chooseTheme(button) {
+  if (!button || !button.dataset.theme) return;
+  try {
+    const next = await invoke("set_theme", { theme: button.dataset.theme });
+    if (next) appState = next;
+    applyTheme((next && next.theme) || button.dataset.theme);
+  } catch (error) {
+    addRow("theme", errorText(error), "error");
   }
 }
 
@@ -462,6 +687,7 @@ function renderThemes() {
       button.dataset.theme = theme.id;
       button.textContent = theme.label;
       button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", "false");
       themesEl.append(button);
     }
   }
@@ -863,12 +1089,22 @@ function rawDragEvents(hot) {
 /* ---------- wiring ---------- */
 
 function wire() {
+  tauriEvent
+    .listen("send-progress", (event) => {
+      onProgress((event && event.payload) || {});
+    })
+    .catch((error) => {
+      addRow("progress", `unavailable: ${errorText(error)}`, "error");
+    });
+
   accountSelect.addEventListener("change", async () => {
     const key = accountSelect.value;
     if (!key) return;
     try {
       appState = await invoke("set_account", { key });
       renderAccounts();
+      renderCircle();
+      syncChatSelect(currentChat());
       await loadTargets();
     } catch (error) {
       addRow("account", errorText(error), "error");
@@ -902,11 +1138,34 @@ function wire() {
     const chat = chatSelect.value;
     if (!chat) return;
     try {
-      appState = await invoke("set_chat", { chat });
+      const next = await invoke("set_chat", { chat });
+      if (next) appState = next;
     } catch (error) {
       addRow("recipient", errorText(error), "error");
+      return;
     }
+    if (!appState.chats || typeof appState.chats !== "object") appState.chats = {};
+    if (appState.account) appState.chats[appState.account] = chat;
   });
+
+  if (circleToggleBtn) {
+    circleToggleBtn.addEventListener("click", async () => {
+      const enabled = !appState.circle;
+      circleToggleBtn.disabled = true;
+      try {
+        const next = await invoke("set_circle", { enabled });
+        if (next) appState = next;
+        else appState.circle = enabled;
+        renderCircle();
+      } catch (error) {
+        addRow("circle", errorText(error), "error");
+      } finally {
+        circleToggleBtn.disabled = false;
+      }
+    });
+  }
+
+  if (retryFailedBtn) retryFailedBtn.addEventListener("click", retryFailed);
 
   refreshBtn.addEventListener("click", () => {
     loadTargets();
@@ -924,15 +1183,23 @@ function wire() {
   }
 
   if (themesEl) {
-    themesEl.addEventListener("click", async (event) => {
+    themesEl.addEventListener("click", (event) => {
       const button = event.target.closest("button");
-      if (!button) return;
-      try {
-        appState = await invoke("set_theme", { theme: button.dataset.theme });
-        applyTheme(appState.theme);
-      } catch (error) {
-        addRow("theme", errorText(error), "error");
-      }
+      if (button) chooseTheme(button);
+    });
+    themesEl.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const buttons = [...themesEl.querySelectorAll("button")];
+      if (!buttons.length) return;
+      event.preventDefault();
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const current = buttons.indexOf(document.activeElement);
+      const index = current < 0
+        ? (step > 0 ? 0 : buttons.length - 1)
+        : (current + step + buttons.length) % buttons.length;
+      const next = buttons[index];
+      next.focus();
+      chooseTheme(next);
     });
   }
 
@@ -1014,6 +1281,8 @@ async function boot() {
   }
 
   renderAccounts();
+  renderCircle();
+  renderRetry();
   renderSettingsFields();
   renderRuntimeInfo();
 

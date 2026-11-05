@@ -484,6 +484,33 @@ select:hover {
   cursor: default;
 }
 
+#circleToggle {
+  width: auto;
+  height: 23px;
+  padding: 0 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+#circleToggle[aria-pressed="true"] {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+#circleToggle[aria-pressed="true"]:hover:not(:disabled) {
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
+#circleToggle[aria-pressed="false"] {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
 .link {
   border: 0;
   background: none;
@@ -626,6 +653,13 @@ select:hover {
   text-overflow: ellipsis;
 }
 
+.ledger-tools {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
 .status {
   overflow-y: auto;
   min-height: 0;
@@ -668,13 +702,29 @@ select:hover {
 
 .row .tag {
   flex: 0 0 auto;
-  max-width: 62%;
+  max-width: 46%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--ink-2);
+}
+
+.row .dest {
+  flex: 0 1 auto;
+  max-width: 32%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-2);
+  opacity: 0.8;
+}
+
+.row .dest[hidden] {
+  display: none;
 }
 
 .row.ok .tag {
@@ -899,7 +949,7 @@ select:hover {
   border-color: var(--ink-2);
 }
 
-.themes button[aria-pressed="true"] {
+.themes button[aria-checked="true"] {
   color: var(--paper);
   background: var(--ink);
   border-color: var(--ink);
