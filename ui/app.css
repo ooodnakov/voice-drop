@@ -137,7 +137,7 @@ body {
   position: relative;
   flex: 1;
   width: 100%;
-  max-width: 620px;
+  max-width: none;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -1177,9 +1177,6 @@ a.link:hover {
 /* ---------- roomy windows ---------- */
 
 @media (min-width: 700px) {
-  .sheet {
-    max-width: 640px;
-  }
 
   .titlebar {
     height: 34px;
@@ -1248,4 +1245,76 @@ a.link:hover {
     padding-left: 15px;
     padding-right: 15px;
   }
+}
+
+
+/* ---------- frameless window resize zones ---------- */
+
+.resizer {
+  position: fixed;
+  z-index: 40;
+}
+
+.resizer.n,
+.resizer.s {
+  left: 10px;
+  right: 10px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.resizer.n {
+  top: 0;
+}
+
+.resizer.s {
+  bottom: 0;
+}
+
+.resizer.w,
+.resizer.e {
+  top: 10px;
+  bottom: 10px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.resizer.w {
+  left: 0;
+}
+
+.resizer.e {
+  right: 0;
+}
+
+.resizer.nw,
+.resizer.ne,
+.resizer.sw,
+.resizer.se {
+  width: 12px;
+  height: 12px;
+}
+
+.resizer.nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.resizer.ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.resizer.sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.resizer.se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
 }

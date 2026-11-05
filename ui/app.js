@@ -1145,6 +1145,18 @@ function wire() {
   const currentWindow = tauriWindow && tauriWindow.getCurrentWindow
     ? tauriWindow.getCurrentWindow()
     : null;
+
+  // Frameless windows lose their native resize border; these strips ask the
+  // window manager to start a resize drag instead.
+  for (const handle of document.querySelectorAll("[data-resize]")) {
+    handle.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || !currentWindow || !currentWindow.startResizeDragging) return;
+      event.preventDefault();
+      currentWindow
+        .startResizeDragging(handle.dataset.resize)
+        .catch((error) => addRow("resize", errorText(error), "error"));
+    });
+  }
   if (currentWindow) {
     winMinBtn.addEventListener("click", () => currentWindow.minimize());
     winCloseBtn.addEventListener("click", () => currentWindow.close());

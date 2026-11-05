@@ -68,7 +68,8 @@ install's account, credentials or python path.
   everything else a document — and a batch freezes its account and recipient
   when the files are dropped, so switching later does not retarget the queue.
 - The window is frameless: the printed title strip is the drag handle, the drawn
-  `–` / `×` minimise and close it. Layout adapts from 340×260 upwards.
+  `–` / `×` minimise and close it, and its edges and corners resize it. The card
+  fills the window, so widening it widens the ledger columns too.
 - `⚙ → Theme`: `gruvbox-dark` (default), `gruvbox-light`, `paper`, `slate`, and
   `system` (follows the OS light/dark preference).
 - The ledger at the bottom prints one line per send with its destination:
