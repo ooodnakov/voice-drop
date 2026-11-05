@@ -27,3 +27,7 @@ Thumbs.db
 run_err.txt
 run_out.txt
 *.log
+
+# python bytecode
+__pycache__/
+*.pyc
