@@ -118,7 +118,7 @@ voice-drop ──▶ <tmp>/voicedrop/tg_send.py        (встроенная к�
 `tg_send.py` работает через Telethon: аудио перекодируется ffmpeg в Opus 48 кГц
 моно (`-application voip`) и уходит с `voice_note=True`; видео превращается в
 квадратный MP4 и уходит с `video_note=True`; остальное — документами.
-Параллельные процессы сериализуются через lock-файл во временной папке и
+Параллельные процессы сериализуются через `<session>.lock` рядом с сессией и
 повторяются при `database is locked`.
 Второй экземпляр приложения сразу завершается.
 
@@ -126,6 +126,7 @@ voice-drop ──▶ <tmp>/voicedrop/tg_send.py        (встроенная к�
 
 ```
 voice-drop --oneshot <chat> <result.json> <file> [file...]
+voice-drop --doctor            # где найдены python/ffmpeg/uv, и выход
 
 python tg_send.py --session <path> --api-id N --api-hash H --list-targets
 python tg_send.py --session <path> --api-id N --api-hash H --whoami

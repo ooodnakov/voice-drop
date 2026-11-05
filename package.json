@@ -1,7 +1,7 @@
 {
   "name": "voice-drop",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Drop a file on a printed label, it lands in Telegram as a voice note, a circle or a document.",
   "scripts": {
     "tauri": "tauri",

@@ -116,13 +116,14 @@ voice-drop ──▶ <tmp>/voicedrop/tg_send.py        (embedded copy of tg_send
 `tg_send.py` drives Telethon: audio is transcoded through ffmpeg to 48 kHz mono
 Opus (`-application voip`) and sent with `voice_note=True`; videos become square
 MP4s sent with `video_note=True`; other files go as documents. Concurrent
-processes are serialised through a lock file in the temp directory and
+processes are serialised through `<session>.lock` next to the session and
 retried on `database is locked`. A second app instance exits immediately.
 
 ## CLI modes
 
 ```
 voice-drop --oneshot <chat> <result.json> <file> [file...]
+voice-drop --doctor            # where python/ffmpeg/uv were found, then exit
 
 python tg_send.py --session <path> --api-id N --api-hash H --list-targets
 python tg_send.py --session <path> --api-id N --api-hash H --whoami

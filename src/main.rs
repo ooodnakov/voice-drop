@@ -374,9 +374,132 @@ fn command_label(command: &Command) -> String {
 }
 
 fn system_python() -> Option<PathBuf> {
-    probe_python("python", &[])
+    let from_registry = path_tool("python.exe")
+        .and_then(|path| probe_python(&path.to_string_lossy(), &[]));
+    from_registry
+        .or_else(|| probe_python("python", &[]))
         .or_else(|| probe_python("python3", &[]))
         .or_else(|| probe_python("py", &["-3"]))
+}
+
+/// Split the `Path` value of a `reg query` dump into directories.
+fn parse_reg_path(text: &str) -> Vec<String> {
+    let mut dirs = Vec::new();
+    for line in text.lines() {
+        let Some((_, rest)) = line.split_once("Path") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let rest = rest
+            .strip_prefix("REG_EXPAND_SZ")
+            .or_else(|| rest.strip_prefix("REG_SZ"));
+        let Some(value) = rest else {
+            continue;
+        };
+        for part in value.split(';') {
+            let part = part.trim();
+            if !part.is_empty() {
+                dirs.push(part.to_string());
+            }
+        }
+    }
+    dirs
+}
+
+/// Expand `%VAR%` segments; unknown variables stay literal.
+fn expand_env_vars(value: &str) -> String {
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 1..];
+        let Some(end) = tail.find('%') else {
+            out.push('%');
+            rest = tail;
+            continue;
+        };
+        let name = &tail[..end];
+        match std::env::var(name) {
+            Ok(resolved) => {
+                out.push_str(&resolved);
+                rest = &tail[end + 1..];
+            }
+            Err(_) => {
+                out.push('%');
+                out.push_str(name);
+                out.push('%');
+                rest = &tail[end + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Directories from the PATH saved in the registry, plus the usual package
+/// manager shims. A GUI app inherits PATH from Explorer, which can be stale:
+/// winget/scoop entries added after Explorer started never reach it.
+#[cfg(windows)]
+fn registered_path_dirs() -> Vec<PathBuf> {
+    use std::sync::OnceLock;
+    static DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        for (hive, key) in [
+            ("HKCU", "Environment"),
+            (
+                "HKLM",
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            ),
+        ] {
+            let mut command = Command::new("reg");
+            command.args(["query", &format!(r"{hive}\{key}"), "/v", "Path"]);
+            hidden(&mut command);
+            let Ok(output) = command.output() else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            for dir in parse_reg_path(&text) {
+                let expanded = PathBuf::from(expand_env_vars(&dir));
+                if !expanded.as_os_str().is_empty() && !dirs.contains(&expanded) {
+                    dirs.push(expanded);
+                }
+            }
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("WinGet")
+                    .join("Links"),
+            );
+        }
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            dirs.push(PathBuf::from(profile).join("scoop").join("shims"));
+        }
+        if let Ok(program_data) = std::env::var("ProgramData") {
+            dirs.push(PathBuf::from(program_data).join("chocolatey").join("bin"));
+        }
+        dirs
+    })
+    .clone()
+}
+
+/// Find an executable in the registry PATH when the process PATH is stale.
+fn path_tool(file: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        for dir in registered_path_dirs() {
+            let candidate = dir.join(file);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn find_ffmpeg() -> Option<PathBuf> {
@@ -387,6 +510,9 @@ fn find_ffmpeg() -> Option<PathBuf> {
     let local = local_tool("ffmpeg");
     if local.exists() {
         return Some(local);
+    }
+    if let Some(found) = path_tool(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }) {
+        return Some(found);
     }
     let mut command = Command::new("ffmpeg");
     command.arg("-version");
@@ -461,6 +587,9 @@ fn find_uv() -> Option<PathBuf> {
     }
     candidates.push(PathBuf::from("/usr/lib/voicedrop/bin/uv"));
     if let Some(found) = candidates.into_iter().find(|path| path.exists()) {
+        return Some(found);
+    }
+    if let Some(found) = path_tool(if cfg!(windows) { "uv.exe" } else { "uv" }) {
         return Some(found);
     }
     let mut command = Command::new("uv");
@@ -983,7 +1112,7 @@ async fn diagnostics() -> Result<serde_json::Value, String> {
             }
             None => serde_json::json!({
                 "ok": false,
-                "detail": "not on PATH and no <app>\\bin\\ffmpeg.exe",
+                "detail": "not on PATH, next to the app, or in the PATH saved in the registry",
             }),
         };
 
@@ -1411,8 +1540,28 @@ fn acquire_instance_lock() -> Option<std::fs::File> {
     }
 }
 
+/// `voice-drop --doctor` — print where the companion tools were found and exit.
+/// Useful for support: the GUI inherits PATH from Explorer, which can be stale.
+fn doctor() -> i32 {
+    let python = system_python();
+    let ffmpeg = find_ffmpeg();
+    let uv = find_uv();
+    let report = serde_json::json!({
+        "python": python.as_ref().map(|path| path.display().to_string()),
+        "ffmpeg": ffmpeg.as_ref().map(|path| path.display().to_string()),
+        "uv": uv.as_ref().map(|path| path.display().to_string()),
+        "app_dir": app_dir().display().to_string(),
+        "data_dir": data_dir().display().to_string(),
+    });
+    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+    0
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--doctor") {
+        std::process::exit(doctor());
+    }
     if args.first().map(String::as_str) == Some("--oneshot") {
         std::process::exit(oneshot(&args));
     }
@@ -1456,6 +1605,22 @@ mod tests {
         assert_eq!(sanitize_key("79876543210"), "79876543210");
         assert_eq!(sanitize_key(""), "account");
         assert_eq!(sanitize_key("@handle"), "account");
+    }
+
+    #[test]
+    fn parses_registry_path_values() {
+        let text = "\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    C:\\one;%TEMP%\\bin;;  D:\\two  \r\n";
+        assert_eq!(parse_reg_path(text), vec!["C:\\one", "%TEMP%\\bin", "D:\\two"]);
+        assert!(parse_reg_path("no path value here").is_empty());
+    }
+
+    #[test]
+    fn expands_known_env_and_keeps_unknown_literal() {
+        assert_eq!(expand_env_vars("plain\\dir"), "plain\\dir");
+        assert_eq!(
+            expand_env_vars("%VOICEDROP_DEFINITELY_UNSET%\\x"),
+            "%VOICEDROP_DEFINITELY_UNSET%\\x"
+        );
     }
 
     #[test]
