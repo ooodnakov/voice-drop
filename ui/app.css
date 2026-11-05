@@ -973,6 +973,15 @@ select:hover {
   flex-direction: column;
 }
 
+a.link {
+  text-decoration: underline;
+  color: var(--ink-2);
+}
+
+a.link:hover {
+  color: var(--signal-ink);
+}
+
 .card .link {
   align-self: flex-start;
 }

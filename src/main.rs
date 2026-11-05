@@ -724,6 +724,36 @@ async fn diagnostics() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("only http(s) links can be opened".into());
+    }
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", &url]);
+        hidden(&mut command);
+        return command.spawn().map(|_| ()).map_err(|error| error.to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+    }
+}
+
+#[tauri::command]
 fn set_theme(theme: String) -> serde_json::Value {
     let mut config = load_config();
     if THEMES.contains(&theme.as_str()) {
@@ -1015,6 +1045,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             prepare,
             diagnostics,
+            open_url,
             current_state,
             set_chat,
             set_circle,

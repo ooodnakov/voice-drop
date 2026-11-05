@@ -534,6 +534,10 @@ async function saveApi() {
     appState = await invoke("set_api_credentials", { apiId, apiHash });
     renderSettingsFields();
     setBanner("", false);
+    if (!accounts().length) {
+      settingsEl.hidden = true;
+      openLogin();
+    }
   } catch (error) {
     setBanner(errorText(error), true);
   } finally {
@@ -971,6 +975,15 @@ function wire() {
   saveApiBtn.addEventListener("click", saveApi);
   if (checkBtn) checkBtn.addEventListener("click", runChecks);
 
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-open]");
+    if (!link) return;
+    event.preventDefault();
+    invoke("open_url", { url: link.dataset.open }).catch((error) => {
+      addRow("link", errorText(error), "error");
+    });
+  });
+
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (settingsEl && !settingsEl.hidden) {
@@ -1013,6 +1026,12 @@ async function boot() {
   }
 
   await wire();
+
+  const needsCredentials = !Number(appState.api_id) || !appState.api_hash;
+  if (needsCredentials) {
+    openSettings();
+    return;
+  }
 
   if (!accounts().length) {
     openLogin();
