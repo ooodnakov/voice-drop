@@ -62,11 +62,11 @@ install's account, credentials or python path.
 
 - **Audio** → voice note (ffmpeg transcodes to 48 kHz mono Opus).
 - **Video** → round video note (square-cropped 480×480, H.264 baseline + AAC,
-  trimmed to 59 s) when the `circle videos` chip is on; turn it off to send the
-  video as a document.
+  trimmed to 59 s).
 - **Anything else** → a document.
-- A batch freezes its account, recipient and circle setting when the files are
-  dropped: switching later does not retarget files already in the queue.
+- The mapping is fixed — audio is always a voice note, video always a circle,
+  everything else a document — and a batch freezes its account and recipient
+  when the files are dropped, so switching later does not retarget the queue.
 - The window is frameless: the printed title strip is the drag handle, the drawn
   `–` / `×` minimise and close it. Layout adapts from 340×260 upwards.
 - `⚙ → Theme`: `gruvbox-dark` (default), `gruvbox-light`, `paper`, `slate`, and

@@ -484,33 +484,6 @@ select:hover {
   cursor: default;
 }
 
-#circleToggle {
-  width: auto;
-  height: 23px;
-  padding: 0 8px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-#circleToggle[aria-pressed="true"] {
-  color: var(--paper);
-  background: var(--ink);
-  border-color: var(--ink);
-}
-
-#circleToggle[aria-pressed="true"]:hover:not(:disabled) {
-  color: var(--paper);
-  border-color: var(--ink);
-}
-
-#circleToggle[aria-pressed="false"] {
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-}
-
 .link {
   border: 0;
   background: none;

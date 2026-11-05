@@ -24,7 +24,6 @@ const addAccountBtn = el("addAccount");
 const removeAccountBtn = el("removeAccount");
 const chatSelect = el("chat");
 const refreshBtn = el("refresh");
-const circleToggleBtn = el("circleToggle");
 const zoneEl = el("zone");
 const pickBtn = el("pick");
 const winMinBtn = el("winMin");
@@ -66,7 +65,7 @@ const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
 let themePreference = "gruvbox-dark";
 let runtime = {};
-let appState = { accounts: [], chats: {}, chat: "", account: "", circle: true, api_id: 0, api_hash: "" };
+let appState = { accounts: [], chats: {}, chat: "", account: "", api_id: 0, api_hash: "" };
 
 let loginPhone = "";
 let phoneHash = "";
@@ -150,7 +149,6 @@ function buildRow(text, tag, cls, dest) {
     base: "",
     account: "",
     chat: "",
-    circle: false,
     state: "queued",
   };
 }
@@ -266,11 +264,6 @@ function syncChatSelect(value) {
   renderPlaceholder();
 }
 
-function renderCircle() {
-  if (!circleToggleBtn) return;
-  circleToggleBtn.setAttribute("aria-pressed", String(Boolean(appState.circle)));
-}
-
 function renderTargets(targets, selected) {
   chatSelect.textContent = "";
   const list = targets.slice();
@@ -359,7 +352,6 @@ function buildItem(batch, path) {
   item.base = base;
   item.account = batch.account;
   item.chat = batch.chat;
-  item.circle = Boolean(batch.circle);
   item.state = "queued";
   return item;
 }
@@ -447,7 +439,6 @@ async function sendBatch(batch) {
     result = await invoke("send_files", {
       account: batch.account,
       chat: batch.chat,
-      circle: batch.circle,
       paths: batch.paths,
     });
   } catch (error) {
@@ -499,7 +490,6 @@ function enqueue(paths) {
     paths: clean,
     account: appState.account,
     chat,
-    circle: Boolean(appState.circle),
     rows: [],
   });
   setBanner("", false);
@@ -510,10 +500,10 @@ function retryFailed() {
   if (!failedRows.length) return;
   const groups = new Map();
   for (const item of failedRows.slice()) {
-    const key = [item.account, item.chat, item.circle ? "1" : "0"].join("\u0000");
+    const key = [item.account, item.chat].join("\u0000");
     let group = groups.get(key);
     if (!group) {
-      group = { paths: [], account: item.account, chat: item.chat, circle: Boolean(item.circle), rows: [] };
+      group = { paths: [], account: item.account, chat: item.chat, rows: [] };
       groups.set(key, group);
     }
     if (!group.paths.includes(item.path)) group.paths.push(item.path);
@@ -595,7 +585,6 @@ async function applyLoginResult(result) {
   appState = result.state || appState;
   closeLogin();
   renderAccounts();
-  renderCircle();
   renderSettingsFields();
   if (accounts().length) await loadTargets();
 }
@@ -1103,8 +1092,7 @@ function wire() {
     try {
       appState = await invoke("set_account", { key });
       renderAccounts();
-      renderCircle();
-      syncChatSelect(currentChat());
+          syncChatSelect(currentChat());
       await loadTargets();
     } catch (error) {
       addRow("account", errorText(error), "error");
@@ -1147,23 +1135,6 @@ function wire() {
     if (!appState.chats || typeof appState.chats !== "object") appState.chats = {};
     if (appState.account) appState.chats[appState.account] = chat;
   });
-
-  if (circleToggleBtn) {
-    circleToggleBtn.addEventListener("click", async () => {
-      const enabled = !appState.circle;
-      circleToggleBtn.disabled = true;
-      try {
-        const next = await invoke("set_circle", { enabled });
-        if (next) appState = next;
-        else appState.circle = enabled;
-        renderCircle();
-      } catch (error) {
-        addRow("circle", errorText(error), "error");
-      } finally {
-        circleToggleBtn.disabled = false;
-      }
-    });
-  }
 
   if (retryFailedBtn) retryFailedBtn.addEventListener("click", retryFailed);
 
@@ -1281,7 +1252,6 @@ async function boot() {
   }
 
   renderAccounts();
-  renderCircle();
   renderRetry();
   renderSettingsFields();
   renderRuntimeInfo();

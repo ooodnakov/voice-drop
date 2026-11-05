@@ -163,18 +163,12 @@ struct Config {
     /// active entry.
     #[serde(default)]
     chats: BTreeMap<String, String>,
-    #[serde(default = "default_circle")]
-    circle: bool,
     #[serde(default = "default_theme")]
     theme: String,
 }
 
 fn default_theme() -> String {
     "gruvbox-dark".into()
-}
-
-fn default_circle() -> bool {
-    true
 }
 
 fn default_api_id() -> u64 {
@@ -199,7 +193,6 @@ impl Default for Config {
             accounts: Vec::new(),
             chat: String::new(),
             chats: BTreeMap::new(),
-            circle: default_circle(),
             theme: default_theme(),
         }
     }
@@ -425,11 +418,9 @@ fn file_needs_ffmpeg(path: &str) -> bool {
         && !AUDIO_PASSTHROUGH_EXTS.contains(&extension.as_str())
 }
 
-/// Whether this batch has to be transcoded at all. `circle` on its own never
-/// forces a transcode: only video (and non-Opus audio) is re-encoded, and a
-/// plain document is uploaded untouched.
-fn needs_ffmpeg(paths: &[String], circle: bool) -> bool {
-    let _ = circle;
+/// Whether this batch has to be transcoded at all: video (always a circle) and
+/// non-Opus audio are re-encoded, a plain document is uploaded untouched.
+fn needs_ffmpeg(paths: &[String]) -> bool {
     paths.iter().any(|path| file_needs_ffmpeg(path))
 }
 
@@ -879,7 +870,6 @@ fn state_payload(config: &Config) -> serde_json::Value {
         "account": config.account,
         "chat": chat_for(config, &config.account),
         "chats": config.chats,
-        "circle": config.circle,
         "theme": config.theme,
         "data_dir": data_dir().display().to_string(),
         "accounts": config.accounts.iter().map(|account| serde_json::json!({
@@ -925,12 +915,6 @@ fn set_account(key: String) -> serde_json::Value {
             config.account = key;
         }
     });
-    state_payload(&config)
-}
-
-#[tauri::command]
-fn set_circle(enabled: bool) -> serde_json::Value {
-    let (config, _) = update_config(|config| config.circle = enabled);
     state_payload(&config)
 }
 
@@ -1159,7 +1143,6 @@ async fn send_files(
     app: tauri::AppHandle,
     account: String,
     chat: String,
-    circle: bool,
     paths: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     if paths.is_empty() {
@@ -1169,8 +1152,8 @@ async fn send_files(
     if chat.is_empty() {
         return Ok(serde_json::json!({ "ok": false, "error": "no recipient selected" }));
     }
-    // The caller froze account/chat/circle when the batch was queued: never
-    // consult the active account or config.chat here.
+    // The caller froze account/chat when the batch was queued: never consult
+    // the active account or config.chat here.
     let requested = account;
     tauri::async_runtime::spawn_blocking(move || {
         let config = load_config();
@@ -1194,7 +1177,7 @@ async fn send_files(
                 "chat": chat,
             }));
         }
-        if needs_ffmpeg(&paths, circle) && find_ffmpeg().is_none() {
+        if needs_ffmpeg(&paths) && find_ffmpeg().is_none() {
             return Ok(serde_json::json!({
                 "ok": false,
                 "error": missing_ffmpeg_error(&paths),
@@ -1202,10 +1185,8 @@ async fn send_files(
                 "chat": chat,
             }));
         }
-        let mut extra = vec!["--chat".to_string(), chat.clone()];
-        if circle {
-            extra.push("--circle".to_string());
-        }
+        // audio becomes a voice note, video a circle, everything else a document
+        let mut extra = vec!["--chat".to_string(), chat.clone(), "--circle".to_string()];
         extra.extend(paths.iter().cloned());
 
         let handle = app.clone();
@@ -1390,7 +1371,7 @@ fn oneshot(args: &[String]) -> i32 {
         eprintln!("no recipient selected");
         return 2;
     }
-    if needs_ffmpeg(&files, config.circle) && find_ffmpeg().is_none() {
+    if needs_ffmpeg(&files) && find_ffmpeg().is_none() {
         eprintln!("{}", missing_ffmpeg_error(&files));
         return 2;
     }
@@ -1401,10 +1382,7 @@ fn oneshot(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let mut extra = vec!["--chat".to_string(), chat];
-    if config.circle {
-        extra.push("--circle".to_string());
-    }
+    let mut extra = vec!["--chat".to_string(), chat, "--circle".to_string()];
     extra.extend(files);
     let result = run_sender(&config, &python, &session_path(&account), &extra, None);
     let text = serde_json::to_string_pretty(&result).unwrap_or_default();
@@ -1454,7 +1432,6 @@ fn main() {
             open_url,
             current_state,
             set_chat,
-            set_circle,
             set_theme,
             set_account,
             set_api_credentials,
@@ -1484,14 +1461,8 @@ mod tests {
     #[test]
     fn needs_ffmpeg_only_when_a_file_is_transcoded() {
         let check = |name: &str, expected: bool| {
-            for circle in [false, true] {
-                let paths = vec![name.to_string()];
-                assert_eq!(
-                    needs_ffmpeg(&paths, circle),
-                    expected,
-                    "{name} with circle={circle}"
-                );
-            }
+            let paths = vec![name.to_string()];
+            assert_eq!(needs_ffmpeg(&paths), expected, "{name}");
         };
         check("notes.pdf", false);
         check("track.mp3", true);
@@ -1504,11 +1475,11 @@ mod tests {
 
     #[test]
     fn needs_ffmpeg_handles_empty_and_mixed_batches() {
-        assert!(!needs_ffmpeg(&[], true));
+        assert!(!needs_ffmpeg(&[]));
         let mixed = vec!["notes.pdf".to_string(), "track.mp3".to_string()];
-        assert!(needs_ffmpeg(&mixed, false));
+        assert!(needs_ffmpeg(&mixed));
         let documents = vec!["notes.pdf".to_string(), "image.png".to_string()];
-        assert!(!needs_ffmpeg(&documents, true));
+        assert!(!needs_ffmpeg(&documents));
     }
 
     #[test]
