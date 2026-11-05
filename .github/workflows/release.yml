@@ -1,0 +1,113 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin --bundles dmg"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+            archive: "VoiceDrop-macos-universal.tar.gz"
+            binary: "target/universal-apple-darwin/release/voice-drop"
+          - platform: ubuntu-22.04
+            args: "--bundles deb,appimage"
+            rust-targets: ""
+            archive: "VoiceDrop-linux-x64.tar.gz"
+            binary: "target/release/voice-drop"
+          - platform: windows-latest
+            args: "--bundles nsis,msi"
+            rust-targets: ""
+            archive: "VoiceDrop-windows-x64.zip"
+            binary: "target/release/voice-drop.exe"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - run: npm install --no-audit --no-fund
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "VoiceDrop ${{ github.ref_name }}"
+          releaseBody: |
+            Portable Telegram sender: drop a file, it lands as a voice note, a round
+            video or a document. Log in with your own account inside the app.
+
+            **Targets** — Windows `msi` + `setup.exe`, macOS `dmg` (universal), Linux
+            `deb` + `AppImage`, plus a plain binary archive for each OS.
+
+            **Requirements**
+            - `ffmpeg` for voice notes and round videos. On Linux the `.deb` pulls it
+              in; elsewhere install it (`brew install ffmpeg`, `winget install ffmpeg`)
+              or drop the binary into `bin/` next to the app.
+            - Python 3.10+ **or** `uv`. The runtime is provisioned on first launch
+              (`uv venv` + `uv pip install telethon`, or `python -m venv` + pip).
+              The Windows zip and the Linux tarball already ship `bin/uv`.
+
+            **Notes**
+            - macOS and Windows builds are unsigned. macOS: right-click → Open the
+              first time, or `xattr -dr com.apple.quarantine /Applications/VoiceDrop.app`.
+            - Sessions and config stay on the machine (`data/` next to the app when
+              that folder is writable, otherwise the per-user data dir).
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Pack binary archive (macOS / Linux)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          mkdir -p package/bin
+          cp "${{ matrix.binary }}" package/bin/voice-drop
+          chmod +x package/bin/voice-drop
+          cp README.md package/
+          if command -v uv >/dev/null 2>&1; then cp "$(command -v uv)" package/bin/uv; fi
+          tar -czf "${{ matrix.archive }}" -C package .
+
+      - name: Pack binary archive (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package\bin | Out-Null
+          Copy-Item "${{ matrix.binary }}" package\bin\voice-drop.exe
+          Copy-Item README.md package\
+          if (Get-Command uv -ErrorAction SilentlyContinue) { Copy-Item (Get-Command uv).Source package\bin\uv.exe }
+          Compress-Archive -Path package\* -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload archive to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "${{ matrix.archive }}" --clobber

@@ -1,0 +1,29 @@
+# build output
+/target
+/node_modules
+/gen/schemas
+
+# portable folder (contains session files and personal config)
+/dist
+/data
+/runtime
+
+# telegram sessions
+*.session
+*.session-journal
+
+# local env / editor
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# design-tool scratch
+.impeccable/
+
+# ad-hoc run logs
+run_err.txt
+run_out.txt
+*.log

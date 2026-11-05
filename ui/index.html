@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>VoiceDrop</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <div class="bench">
+      <main id="zone" class="sheet">
+        <div class="titlebar" data-tauri-drag-region>
+          <span class="wordmark" data-tauri-drag-region>VoiceDrop</span>
+          <div class="winctl">
+            <button id="winMin" class="winbtn min" aria-label="Minimize window" title="Minimize"></button>
+            <button id="winClose" class="winbtn close" aria-label="Close window" title="Close"></button>
+          </div>
+        </div>
+
+        <header class="sheet-head">
+          <span class="micro">Sender</span>
+          <div class="select-wrap small">
+            <select id="account" aria-label="Sending account"></select>
+          </div>
+          <button id="addAccount" class="chip" title="Log in another account" aria-label="Log in another account">
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2v8M2 6h8" /></svg>
+          </button>
+          <button id="removeAccount" class="chip" title="Remove this account" aria-label="Remove this account">
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>
+          </button>
+        </header>
+
+        <div class="dest">
+          <span class="micro">To</span>
+          <div class="dest-row">
+            <div class="select-wrap">
+              <select id="chat" aria-label="Recipient"></select>
+            </div>
+            <button id="refresh" class="chip" title="Reload chat list" aria-label="Reload chat list">
+              <svg viewBox="0 0 12 12" aria-hidden="true">
+                <path d="M9.6 4.6A4.1 4.1 0 1 0 10 7.2" />
+                <path d="M9.9 2.1v2.7H7.2" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="banner" class="banner" hidden></div>
+
+        <section class="fill">
+          <span class="mark tl"></span><span class="mark tr"></span>
+          <span class="mark bl"></span><span class="mark br"></span>
+          <div class="fill-copy">
+            <div class="fill-title">Drop a file</div>
+            <div class="fill-spec">audio → voice · video → circle · anything else → document</div>
+          </div>
+          <button id="pick" class="link">choose a file…</button>
+        </section>
+
+        <section class="ledger">
+          <div class="ledger-head">
+            <span class="micro">Tracking</span>
+            <span class="micro ledger-count" id="ledgerHint">stamped on send</span>
+          </div>
+          <div id="status" class="status" aria-live="polite"></div>
+        </section>
+
+        <footer class="sheet-foot">
+          <button id="settingsToggle" class="link">api &amp; runtime</button>
+        </footer>
+
+      </main>
+    </div>
+
+    <section id="login" class="overlay" hidden>
+      <div class="card">
+        <h2>Sign in</h2>
+        <div class="step" data-step="1">
+          <label class="field"><span class="micro">Phone</span><input id="phone" placeholder="+380…" autocomplete="off" spellcheck="false" /></label>
+          <button id="sendCode" class="action">Send code</button>
+        </div>
+        <div class="step" data-step="2" hidden>
+          <label class="field"><span class="micro">Code</span><input id="code" placeholder="12345" autocomplete="off" spellcheck="false" /></label>
+          <button id="signIn" class="action">Sign in</button>
+        </div>
+        <div class="step" data-step="3" hidden>
+          <label class="field"><span class="micro">2FA password</span><input id="password" type="password" autocomplete="off" /></label>
+          <button id="confirmPassword" class="action">Confirm</button>
+        </div>
+        <div id="loginError" class="error" role="alert"></div>
+        <button id="loginCancel" class="link">cancel</button>
+      </div>
+    </section>
+
+    <section id="settings" class="overlay" hidden>
+      <div class="card">
+        <div class="card-head">
+          <h2>API &amp; runtime</h2>
+          <button id="settingsClose" class="winbtn close" aria-label="Close settings" title="Close"></button>
+        </div>
+        <div class="block">
+          <span class="micro">Theme</span>
+          <div class="themes" id="themes" role="radiogroup" aria-label="Theme"></div>
+        </div>
+        <div class="block">
+          <div class="check-head">
+            <span class="micro">Checks</span>
+            <button id="check" class="link">run check</button>
+          </div>
+          <div id="checks" class="checks"></div>
+        </div>
+        <label class="field"><span class="micro">api_id</span><input id="apiId" inputmode="numeric" /></label>
+        <label class="field"><span class="micro">api_hash</span><input id="apiHash" spellcheck="false" /></label>
+        <button id="saveApi" class="action">Save</button>
+        <div id="runtimeInfo" class="mono"></div>
+      </div>
+    </section>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VoiceDrop",
+  "version": "0.1.0",
+  "identifier": "com.ooodnakov.voicedrop",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "VoiceDrop",
+        "width": 480,
+        "height": 420,
+        "minWidth": 340,
+        "minHeight": 260,
+        "center": true,
+        "alwaysOnTop": false,
+        "decorations": false,
+        "dragDropEnabled": true,
+        "transparent": false,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "copyright": "\u00a9 2026 VoiceDrop",
+    "shortDescription": "Send files to Telegram as voice notes, round videos or documents",
+    "longDescription": "A portable window that turns a dropped file into a Telegram voice message, a round video note or a document. Log in with your own account; audio is transcoded to Opus and video is square-cropped to a circle.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}
