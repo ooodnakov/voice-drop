@@ -37,8 +37,9 @@ Windows expect a SmartScreen prompt.
 
 ## Requirements
 
-- `ffmpeg` — voice notes and round videos. The Linux `.deb` pulls it in;
-  otherwise install it or drop the binary into `bin/`.
+- `ffmpeg` — only for conversion: non-Opus audio and videos. Opus voice files
+  and plain documents send without it. The Linux `.deb` pulls it in; otherwise
+  install it or drop the binary next to the app.
 - Python 3.10+ **or** `uv` — the first launch provisions `runtime/python`
   (`uv venv` + `uv pip install telethon`, or `python -m venv` + pip). The binary
   archives ship `uv`, the installers rely on your system `uv`/python.
@@ -61,14 +62,19 @@ install's account, credentials or python path.
 
 - **Audio** → voice note (ffmpeg transcodes to 48 kHz mono Opus).
 - **Video** → round video note (square-cropped 480×480, H.264 baseline + AAC,
-  trimmed to 59 s).
+  trimmed to 59 s) when the `circle videos` chip is on; turn it off to send the
+  video as a document.
 - **Anything else** → a document.
+- A batch freezes its account, recipient and circle setting when the files are
+  dropped: switching later does not retarget files already in the queue.
 - The window is frameless: the printed title strip is the drag handle, the drawn
   `–` / `×` minimise and close it. Layout adapts from 340×260 upwards.
 - `⚙ → Theme`: `gruvbox-dark` (default), `gruvbox-light`, `paper`, `slate`, and
   `system` (follows the OS light/dark preference).
-- The ledger at the bottom prints one line per send: `voice · #id`,
-  `circle · #id`, `document · #id`, or the failure reason.
+- The ledger at the bottom prints one line per send with its destination:
+  `voice · #id`, `circle · #id`, `document · #id`, or the failure reason, plus
+  a `retry failed` link that re-queues only what failed, for the original
+  account and recipient.
 
 ## Portable layout
 

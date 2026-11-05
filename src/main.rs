@@ -249,11 +249,6 @@ fn save_config_locked(config: &Config) -> bool {
     true
 }
 
-fn save_config(config: &Config) -> bool {
-    let _guard = lock_config();
-    save_config_locked(config)
-}
-
 /// Keep a config we cannot parse instead of overwriting it with defaults.
 fn set_config_aside(path: &Path) {
     if !path.exists() {
@@ -286,6 +281,16 @@ fn load_config_locked() -> Config {
 fn load_config() -> Config {
     let _guard = lock_config();
     load_config_locked()
+}
+
+/// Read, mutate and persist the config under a single lock so two commands
+/// cannot lose each other's update.
+fn update_config<R>(body: impl FnOnce(&mut Config) -> R) -> (Config, R) {
+    let _guard = lock_config();
+    let mut config = load_config_locked();
+    let result = body(&mut config);
+    save_config_locked(&config);
+    (config, result)
 }
 
 /// The legacy `chat` belongs to the active account; seed `chats` from it once.
@@ -784,24 +789,21 @@ where
 #[tauri::command]
 async fn prepare() -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let mut config = load_config();
+        let config = load_config();
         let ffmpeg = find_ffmpeg();
         let python = ensure_python(&config);
-        let mut changed = false;
-        if let Ok(path) = &python {
-            let resolved = path.to_string_lossy().to_string();
-            if config.python.as_deref() != Some(resolved.as_str()) {
-                config.python = Some(resolved);
-                changed = true;
-            }
-        }
+        let resolved_python = python
+            .as_ref()
+            .ok()
+            .map(|path| path.to_string_lossy().to_string());
+
         // Fill in names for accounts whose session exists but metadata is empty.
+        // Network work happens outside the config lock; results are applied by
+        // account key afterwards so a concurrent edit is never clobbered.
+        let mut fetched: Vec<(String, String, String)> = Vec::new();
         if let Ok(python_path) = &python {
-            for index in 0..config.accounts.len() {
-                if !config.accounts[index].name.is_empty() {
-                    continue;
-                }
-                let path = session_path(&config.accounts[index]);
+            for account in config.accounts.iter().filter(|account| account.name.is_empty()) {
+                let path = session_path(account);
                 if !path.exists() {
                     continue;
                 }
@@ -809,24 +811,40 @@ async fn prepare() -> Result<serde_json::Value, String> {
                     run_sender(&config, python_path, &path, &["--whoami".to_string()], None);
                 if result.get("ok").and_then(|value| value.as_bool()) == Some(true) {
                     if let Some(user) = result.get("user") {
-                        config.accounts[index].name = user
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        config.accounts[index].username = user
-                            .get("username")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        changed = true;
+                        fetched.push((
+                            account.key.clone(),
+                            user.get("name")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            user.get("username")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                        ));
                     }
                 }
             }
         }
-        if changed {
-            save_config(&config);
-        }
+
+        let config = if resolved_python.is_some() || !fetched.is_empty() {
+            update_config(|config| {
+                if let Some(path) = &resolved_python {
+                    if config.python.as_deref() != Some(path.as_str()) {
+                        config.python = Some(path.clone());
+                    }
+                }
+                for (key, name, username) in &fetched {
+                    if let Some(entry) = config.accounts.iter_mut().find(|entry| &entry.key == key) {
+                        entry.name = name.clone();
+                        entry.username = username.clone();
+                    }
+                }
+            })
+            .0
+        } else {
+            config
+        };
 
         let runtime = Runtime {
             // Documents and Opus files need no ffmpeg, so it stays advisory.
@@ -881,9 +899,11 @@ fn current_state() -> serde_json::Value {
 
 #[tauri::command]
 fn set_chat(chat: String) -> serde_json::Value {
-    let mut config = load_config();
     let chat = chat.trim().to_string();
-    if !chat.is_empty() {
+    if chat.is_empty() {
+        return state_payload(&load_config());
+    }
+    let (config, _) = update_config(|config| {
         let key = if config.account.is_empty() {
             config.accounts.first().map(|account| account.key.clone()).unwrap_or_default()
         } else {
@@ -894,26 +914,23 @@ fn set_chat(chat: String) -> serde_json::Value {
         if !key.is_empty() {
             config.chats.insert(key, chat);
         }
-        save_config(&config);
-    }
+    });
     state_payload(&config)
 }
 
 #[tauri::command]
 fn set_account(key: String) -> serde_json::Value {
-    let mut config = load_config();
-    if account_by_key(&config, &key).is_some() {
-        config.account = key;
-        save_config(&config);
-    }
+    let (config, _) = update_config(|config| {
+        if account_by_key(config, &key).is_some() {
+            config.account = key;
+        }
+    });
     state_payload(&config)
 }
 
 #[tauri::command]
 fn set_circle(enabled: bool) -> serde_json::Value {
-    let mut config = load_config();
-    config.circle = enabled;
-    save_config(&config);
+    let (config, _) = update_config(|config| config.circle = enabled);
     state_payload(&config)
 }
 
@@ -1073,43 +1090,44 @@ fn open_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn set_theme(theme: String) -> serde_json::Value {
-    let mut config = load_config();
-    if THEMES.contains(&theme.as_str()) {
-        config.theme = theme;
-        save_config(&config);
-    }
+    let (config, _) = update_config(|config| {
+        if THEMES.contains(&theme.as_str()) {
+            config.theme = theme;
+        }
+    });
     state_payload(&config)
 }
 
 #[tauri::command]
 fn set_api_credentials(api_id: u64, api_hash: String) -> serde_json::Value {
-    let mut config = load_config();
-    if api_id > 0 && !api_hash.trim().is_empty() {
-        config.api_id = api_id;
-        config.api_hash = api_hash.trim().to_string();
-        save_config(&config);
-    }
+    let api_hash = api_hash.trim().to_string();
+    let (config, _) = update_config(|config| {
+        if api_id > 0 && !api_hash.is_empty() {
+            config.api_id = api_id;
+            config.api_hash = api_hash;
+        }
+    });
     state_payload(&config)
 }
 
 #[tauri::command]
 fn remove_account(key: String) -> serde_json::Value {
-    let mut config = load_config();
-    if let Some(index) = config.accounts.iter().position(|account| account.key == key) {
-        let account = config.accounts.remove(index);
-        let path = session_path(&account);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(PathBuf::from(format!("{}-journal", path.display())));
-        config.chats.remove(&key);
-        if config.account == key {
-            config.account = config
-                .accounts
-                .first()
-                .map(|entry| entry.key.clone())
-                .unwrap_or_default();
+    let (config, _) = update_config(|config| {
+        if let Some(index) = config.accounts.iter().position(|account| account.key == key) {
+            let account = config.accounts.remove(index);
+            let path = session_path(&account);
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}-journal", path.display())));
+            config.chats.remove(&key);
+            if config.account == key {
+                config.account = config
+                    .accounts
+                    .first()
+                    .map(|entry| entry.key.clone())
+                    .unwrap_or_default();
+            }
         }
-        save_config(&config);
-    }
+    });
     state_payload(&config)
 }
 
@@ -1245,7 +1263,7 @@ async fn login_code(
     phone_hash: String,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut config = load_config();
+        let config = load_config();
         let key = sanitize_key(&phone);
         let session = accounts_dir().join(format!("{key}.session"));
         let python = ensure_python(&config)?;
@@ -1263,7 +1281,7 @@ async fn login_code(
             ],
             None,
         );
-        finalize_login(&mut config, &key, &phone, &result)
+        update_config(|config| finalize_login(config, &key, &phone, &result)).1
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1272,7 +1290,7 @@ async fn login_code(
 #[tauri::command]
 async fn login_password(phone: String, password: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut config = load_config();
+        let config = load_config();
         let key = sanitize_key(&phone);
         let session = accounts_dir().join(format!("{key}.session"));
         let python = ensure_python(&config)?;
@@ -1284,7 +1302,7 @@ async fn login_password(phone: String, password: String) -> Result<serde_json::V
             None,
             &[("VOICEDROP_2FA", password.as_str())],
         );
-        finalize_login(&mut config, &key, &phone, &result)
+        update_config(|config| finalize_login(config, &key, &phone, &result)).1
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1324,7 +1342,6 @@ fn finalize_login(
             });
         }
         config.account = key.to_string();
-        save_config(config);
         return Ok(serde_json::json!({
             "ok": true,
             "account": key,

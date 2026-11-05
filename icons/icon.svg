@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="VoiceDrop">
+  <title>VoiceDrop</title>
+  <!-- Grid: 32 units = 1 px at 16x16, so straight edges stay sharp at 16, 32, 64... -->
+  <!-- Label sheet with its printed edge -->
+  <rect width="512" height="512" rx="48" fill="#32302f"/>
+  <rect x="4" y="4" width="504" height="504" rx="44" fill="none" stroke="#4a4441" stroke-width="8"/>
+  <!-- Crop marks of the drop field -->
+  <path fill="#8a7d70" d="M32 32H128V56H56V128H32ZM480 32V128H456V56H384V32ZM32 480V384H56V456H128V480ZM480 480H384V456H456V384H480Z"/>
+  <!-- Voice bars -->
+  <path fill="#ebdbb2" d="M96 160H128V256H96ZM160 128H192V288H160ZM320 128H352V288H320ZM384 160H416V256H384Z"/>
+  <!-- Drop arrow in the courier signal colour -->
+  <path fill="#fe8019" d="M224 96H288V320H352L256 416L160 320H224Z"/>
+</svg>
