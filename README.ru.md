@@ -30,7 +30,7 @@ VoiceDrop работает через **твои собственные** клю
 | macOS | `…universal.dmg`, `VoiceDrop-macos-universal.tar.gz` |
 | Linux | `…amd64.deb`, `…amd64.AppImage`, `VoiceDrop-linux-x64.tar.gz` |
 
-Архивы — это просто папки с бинарями (`bin/voice-drop` + `bin/uv` + README):
+Архивы — это плоские папки с бинарями (`voice-drop` + `uv` + `README.md`):
 распаковал куда угодно и запустил. Сборки не подписаны: на macOS первый раз
 открывай через правый клик → **Open** (или
 `xattr -dr com.apple.quarantine /Applications/VoiceDrop.app`), на Windows будет

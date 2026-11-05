@@ -30,7 +30,7 @@ cannot get stuck at a login prompt without knowing what to paste.
 | macOS | `…universal.dmg`, `VoiceDrop-macos-universal.tar.gz` |
 | Linux | `…amd64.deb`, `…amd64.AppImage`, `VoiceDrop-linux-x64.tar.gz` |
 
-The archives are plain binary folders (`bin/voice-drop` + `bin/uv` + README) —
+The archives are flat binary folders (`voice-drop` + `uv` + `README.md`) —
 unpack anywhere and run. Builds are unsigned: on macOS right-click → **Open** the
 first time (or `xattr -dr com.apple.quarantine /Applications/VoiceDrop.app`), on
 Windows expect a SmartScreen prompt.

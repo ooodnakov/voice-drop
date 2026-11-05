@@ -25,9 +25,10 @@ about what was sent or where.
 ## Positioning
 
 One window that speaks Telegram's own media vocabulary instead of asking the
-user to choose a message type: the drop target, the voice/circle toggle and the
-recipient line are the entire interface, and the conversion work (Opus voice,
-square round video) happens behind the drop.
+user to choose a message type: the drop target, the recipient line and the
+account selector are the entire interface, and the conversion work (Opus voice,
+square round video) happens behind the drop. The type follows the file: audio is
+a voice note, video a round note, everything else a document.
 
 ## Operating Context
 
@@ -42,11 +43,11 @@ part of the normal screen, not an exception path.
 ## Capabilities and Constraints
 
 - Tauri 2 window, vanilla HTML/CSS/JS front end, Rust command layer, Python +
-  Telethon backend, ffmpeg required for voice and round-video conversion.
+  Telethon backend, ffmpeg required only for conversion (video, non-Opus audio).
 - Actions that exist today and must keep working: log in (phone → code → 2FA),
   switch and remove accounts, choose a recipient from recent chats, refresh that
-  list, send one or many files, toggle videos-as-circles, edit api_id/api_hash,
-  read per-file status and errors.
+  list, send one or many files, retry failed rows, edit api_id/api_hash, read
+  per-file status and errors.
 - Window is small and always-on-top; 340×260 is the minimum, it ships around
   480×460.
 - No bundler, no framework, no external fonts or network assets: the front end

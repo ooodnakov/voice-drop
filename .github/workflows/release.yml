@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# One release run at a time per tag; a second build would race the draft.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
     strategy:
@@ -68,21 +73,23 @@ jobs:
             video or a document. Log in with your own account inside the app.
 
             **Targets** — Windows `msi` + `setup.exe`, macOS `dmg` (universal), Linux
-            `deb` + `AppImage`, plus a plain binary archive for each OS.
+            `deb` + `AppImage`, plus a flat binary archive for each OS.
 
             **Requirements**
-            - `ffmpeg` for voice notes and round videos. On Linux the `.deb` pulls it
-              in; elsewhere install it (`brew install ffmpeg`, `winget install ffmpeg`)
-              or drop the binary into `bin/` next to the app.
+            - `ffmpeg` — only for conversion: video and non-Opus audio. Opus voice
+              files and documents send without it. On Linux the `.deb` pulls it in;
+              elsewhere install it (`brew install ffmpeg`, `winget install ffmpeg`)
+              or drop the binary next to the app.
             - Python 3.10+ **or** `uv`. The runtime is provisioned on first launch
               (`uv venv` + `uv pip install telethon`, or `python -m venv` + pip).
-              The Windows zip and the Linux tarball already ship `bin/uv`.
+              The Windows zip and the Linux tarball already ship `uv`.
 
             **Notes**
             - macOS and Windows builds are unsigned. macOS: right-click → Open the
               first time, or `xattr -dr com.apple.quarantine /Applications/VoiceDrop.app`.
             - Sessions and config stay on the machine (`data/` next to the app when
               that folder is writable, otherwise the per-user data dir).
+            - `voice-drop --doctor` prints where python/ffmpeg/uv were found.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -111,3 +118,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.ref_name }}" "${{ matrix.archive }}" --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --draft=false --latest
