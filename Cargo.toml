@@ -1,6 +1,6 @@
 [package]
 name = "voice-drop"
-version = "0.1.6"
+version = "0.1.7"
 description = "Drop an audio file, send it as a Telegram voice note"
 edition = "2021"
 rust-version = "1.89"
