@@ -92,11 +92,12 @@
     </section>
 
     <section id="settings" class="overlay" hidden>
-      <div class="card">
+      <div class="card settings-card">
         <div class="card-head">
           <h2>API &amp; runtime</h2>
           <button id="settingsClose" class="winbtn close" aria-label="Close settings" title="Close"></button>
         </div>
+        <div class="card-body">
         <div class="block">
           <span class="micro">Theme</span>
           <div class="themes" id="themes" role="radiogroup" aria-label="Theme"></div>
@@ -112,6 +113,7 @@
         <label class="field"><span class="micro">api_hash</span><input id="apiHash" spellcheck="false" /></label>
         <button id="saveApi" class="action">Save</button>
         <div id="runtimeInfo" class="mono"></div>
+        </div>
       </div>
     </section>
 

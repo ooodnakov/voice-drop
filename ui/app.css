@@ -766,18 +766,30 @@ select:hover {
   box-shadow: 0 16px 36px var(--scrim-shadow);
 }
 
+.card.settings-card {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
 .card-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin: -14px -14px 2px;
-  padding: 10px 8px 8px 14px;
+  padding: 11px 8px 8px 14px;
   background: var(--paper);
   border-bottom: 1px solid var(--rule);
+}
+
+.card-body {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 10px 14px 14px;
 }
 
 .card-head h2 {

@@ -145,9 +145,6 @@ struct Config {
     circle: bool,
     #[serde(default = "default_theme")]
     theme: String,
-    /// Only read during migration from the pre-portable layout.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    session: Option<String>,
 }
 
 fn default_theme() -> String {
@@ -181,7 +178,6 @@ impl Default for Config {
             chat: String::new(),
             circle: default_circle(),
             theme: default_theme(),
-            session: None,
         }
     }
 }
@@ -197,68 +193,15 @@ fn save_config(config: &Config) -> bool {
         .is_some()
 }
 
-fn copy_legacy_session(raw: &str) -> Option<Account> {
-    let source = PathBuf::from(raw);
-    let source = if source.extension().is_some() {
-        source
-    } else {
-        source.with_extension("session")
-    };
-    if !source.exists() {
-        return None;
-    }
-    let _ = std::fs::create_dir_all(accounts_dir());
-    let target = accounts_dir().join("legacy.session");
-    std::fs::copy(&source, &target).ok()?;
-    let journal = PathBuf::from(format!("{}-journal", source.display()));
-    if journal.exists() {
-        let _ = std::fs::copy(&journal, accounts_dir().join("legacy.session-journal"));
-    }
-    Some(Account {
-        key: "legacy".into(),
-        session: "legacy.session".into(),
-        ..Default::default()
-    })
-}
-
-fn import_previous_config() -> Option<Config> {
-    let old = std::env::var("APPDATA")
-        .ok()
-        .map(|base| PathBuf::from(base).join("VoiceDrop").join("config.json"))?;
-    let text = std::fs::read_to_string(old).ok()?;
-    let mut config: Config = serde_json::from_str(&text).ok()?;
-    if let Some(raw) = config.session.clone() {
-        if let Some(account) = copy_legacy_session(&raw) {
-            config.account = account.key.clone();
-            config.accounts.push(account);
-        }
-    }
-    config.session = None;
-    save_config(&config);
-    Some(config)
-}
-
 fn load_config() -> Config {
     if let Ok(text) = std::fs::read_to_string(config_path()) {
-        if let Ok(mut config) = serde_json::from_str::<Config>(&text) {
-            if let Some(raw) = config.session.clone() {
-                if config.accounts.is_empty() {
-                    if let Some(account) = copy_legacy_session(&raw) {
-                        config.account = account.key.clone();
-                        config.accounts.push(account);
-                    }
-                }
-                config.session = None;
-                save_config(&config);
-            }
+        if let Ok(config) = serde_json::from_str::<Config>(&text) {
             return config;
         }
     }
-    import_previous_config().unwrap_or_else(|| {
-        let config = Config::default();
-        save_config(&config);
-        config
-    })
+    let config = Config::default();
+    save_config(&config);
+    config
 }
 
 fn account_by_key<'a>(config: &'a Config, key: &str) -> Option<&'a Account> {

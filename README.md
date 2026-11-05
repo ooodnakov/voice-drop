@@ -59,8 +59,9 @@ the folder is not writable â€” macOS `.app` in `/Applications`, Linux AppImage â
    and shows the resolved python/ffmpeg paths plus a run-check for
    python/telegram/ffmpeg.
 
-Existing installs migrate automatically: the previous `%APPDATA%\VoiceDrop\config.json`
-session is copied to `data\accounts\legacy.session` and re-labelled on start.
+Nothing is imported from the system: the app reads only its own `data/config.json`
+next to the executable, so a copied folder starts empty and a fresh download never
+inherits another install's account or credentials.
 
 ## Using it
 
