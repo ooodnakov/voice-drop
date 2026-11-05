@@ -76,8 +76,8 @@ VoiceDrop работает через **твои собственные** клю
 ```
 VoiceDrop/
   voice-drop[.exe]
-  bin/uv                (едет в архивах; собирает runtime)
-  bin/ffmpeg            (опционально: ffmpeg рядом вместо PATH)
+  uv[.exe]              (едет в архивах; собирает runtime)
+  ffmpeg[.exe]          (опционально: ffmpeg рядом вместо PATH)
   data/config.json      (создаётся при первом запуске)
   data/accounts/*.session
   data/instance.lock

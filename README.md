@@ -75,8 +75,8 @@ install's account, credentials or python path.
 ```
 VoiceDrop/
   voice-drop[.exe]
-  bin/uv                (ships with the archives; builds the runtime)
-  bin/ffmpeg            (optional: bundled ffmpeg instead of PATH)
+  uv[.exe]              (ships with the archives; builds the runtime)
+  ffmpeg[.exe]          (optional: bundled ffmpeg instead of PATH)
   data/config.json      (created on first run)
   data/accounts/*.session
   data/instance.lock

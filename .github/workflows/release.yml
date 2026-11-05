@@ -90,21 +90,21 @@ jobs:
       - name: Pack binary archive (macOS / Linux)
         if: matrix.platform != 'windows-latest'
         run: |
-          mkdir -p package/bin
-          cp "${{ matrix.binary }}" package/bin/voice-drop
-          chmod +x package/bin/voice-drop
+          mkdir -p package
+          cp "${{ matrix.binary }}" package/voice-drop
+          chmod +x package/voice-drop
           cp README.md package/
-          if command -v uv >/dev/null 2>&1; then cp "$(command -v uv)" package/bin/uv; fi
+          if command -v uv >/dev/null 2>&1; then cp "$(command -v uv)" package/uv; fi
           tar -czf "${{ matrix.archive }}" -C package .
 
       - name: Pack binary archive (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path package\bin | Out-Null
-          Copy-Item "${{ matrix.binary }}" package\bin\voice-drop.exe
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item "${{ matrix.binary }}" package\voice-drop.exe
           Copy-Item README.md package\
-          if (Get-Command uv -ErrorAction SilentlyContinue) { Copy-Item (Get-Command uv).Source package\bin\uv.exe }
+          if (Get-Command uv -ErrorAction SilentlyContinue) { Copy-Item (Get-Command uv).Source package\uv.exe }
           Compress-Archive -Path package\* -DestinationPath "${{ matrix.archive }}"
 
       - name: Upload archive to the release

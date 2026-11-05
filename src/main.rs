@@ -69,7 +69,9 @@ fn data_dir() -> PathBuf {
 }
 
 fn accounts_dir() -> PathBuf {
-    data_dir().join("accounts")
+    let dir = data_dir().join("accounts");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn config_path() -> PathBuf {
@@ -277,6 +279,10 @@ fn system_python() -> Option<PathBuf> {
 }
 
 fn find_ffmpeg() -> Option<PathBuf> {
+    let beside = app_dir().join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    if beside.exists() {
+        return Some(beside);
+    }
     let local = local_tool("ffmpeg");
     if local.exists() {
         return Some(local);
@@ -405,6 +411,20 @@ fn ensure_python(config: &Config) -> Result<PathBuf, String> {
     }
 }
 
+fn short(text: &str, max: usize) -> String {
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let mut out: String = line.chars().take(max).collect();
+    if line.chars().count() > max {
+        out.push('\u{2026}');
+    }
+    out
+}
+
 fn run_sender(
     config: &Config,
     python: &Path,
@@ -443,18 +463,22 @@ fn run_sender(
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             match serde_json::from_str::<serde_json::Value>(&stdout) {
                 Ok(value) => value,
-                Err(_) => serde_json::json!({
-                    "ok": false,
-                    "error": format!(
-                        "sender returned no JSON (exit {}): {}",
-                        output.status.code().unwrap_or(-1),
-                        if stdout.is_empty() {
-                            String::from_utf8_lossy(&output.stderr).trim().to_string()
-                        } else {
-                            stdout
-                        }
-                    )
-                }),
+                Err(_) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let detail = if stdout.is_empty() {
+                        short(&stderr, 240)
+                    } else {
+                        short(&stdout, 240)
+                    };
+                    serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "sender failed (exit {}): {}",
+                            output.status.code().unwrap_or(-1),
+                            if detail.is_empty() { "no output".to_string() } else { detail }
+                        )
+                    })
+                }
             }
         }
         Err(error) => serde_json::json!({
